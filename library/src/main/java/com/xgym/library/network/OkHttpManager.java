@@ -1,0 +1,179 @@
+package com.xgym.library.network;
+
+import java.io.File;
+import java.io.IOException;
+import java.net.FileNameMap;
+import java.net.URLConnection;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.TimeUnit;
+
+import rx.Observable;
+import rx.Subscriber;
+import android.net.Uri;
+
+import com.squareup.okhttp.FormEncodingBuilder;
+import com.squareup.okhttp.MediaType;
+import com.squareup.okhttp.MultipartBuilder;
+import com.squareup.okhttp.OkHttpClient;
+import com.squareup.okhttp.Request;
+import com.squareup.okhttp.RequestBody;
+import com.squareup.okhttp.Response;
+
+public class OkHttpManager {
+    private static OkHttpClient mClient = null;
+    private String url = null;
+    private int method = Method.GET;
+    private HashMap<String, Object> params = new HashMap<String, Object>();
+    private HashMap<String, String> headers = new HashMap<String, String>();
+    private OkHttpClient client;
+    private String tag = null;
+
+    private OkHttpManager(String url) {
+        if (mClient == null) {
+            mClient = new OkHttpClient();
+        }
+        client = mClient.clone();
+        this.url = url;
+    }
+
+    public static void setHttpClient(OkHttpClient client) {
+        mClient = client;
+    }
+
+    public static OkHttpManager on(String url) {
+        return new OkHttpManager(url);
+    }
+
+    public static void cancel(String tag) {
+        if (mClient != null) {
+            mClient.cancel(tag);
+        }
+    }
+
+    public OkHttpManager tag(final String tag) {
+        this.tag = tag;
+        return this;
+    }
+
+    public OkHttpManager setConnectTimeout(long time, TimeUnit timeUnit) {
+        client.setConnectTimeout(time, timeUnit);
+        return this;
+    }
+
+    public OkHttpManager setReadTimeout(long time, TimeUnit timeUnit) {
+        client.setReadTimeout(time, timeUnit);
+        return this;
+    }
+
+    public OkHttpManager setWriteTimeout(long time, TimeUnit timeUnit) {
+        client.setWriteTimeout(time, timeUnit);
+        return this;
+    }
+
+    public OkHttpManager method(final int method) {
+        this.method = method;
+        return this;
+    }
+
+    public OkHttpManager header(Map<String, String> header) {
+        this.headers.putAll(header);
+        return this;
+    }
+
+    public OkHttpManager header(String name, String value) {
+        headers.put(name, value);
+        return this;
+    }
+
+    public OkHttpManager params(Map<String, Object> params) {
+        this.params.putAll(params);
+        return this;
+    }
+
+    public OkHttpManager params(String name, Object value) {
+        this.params.put(name, value);
+        return this;
+    }
+
+    public Observable<Response> newCallSync() {
+        return Observable.create(new Observable.OnSubscribe<Response>() {
+            @Override
+            public void call(Subscriber<? super Response> subscriber) {
+                try {
+                    subscriber.onNext(newCall());
+                    subscriber.onCompleted();
+                } catch (IOException e) {
+                    subscriber.onError(e);
+                }
+            }
+        });
+    }
+
+    public Response newCall() throws IOException {
+        if (url == null) {
+            throw new NullPointerException("url 不能为空");
+        }
+        if (method == Method.GET) {
+            Uri.Builder builder = Uri.parse(url).buildUpon();
+            for (Map.Entry<String, Object> entry : params.entrySet()) {
+                builder.appendQueryParameter(entry.getKey(), entry.getValue().toString());
+            }
+            url = builder.toString();
+        }
+
+        Request.Builder builder = new Request.Builder().url(this.url);
+
+        switch (method) {
+            case Method.POST:
+                boolean hasFile = false;
+                MultipartBuilder multipartBuilder = new MultipartBuilder();
+                multipartBuilder.type(MultipartBuilder.FORM);
+
+                FormEncodingBuilder formEncodingBuilder = new FormEncodingBuilder();
+                for (Map.Entry<String, Object> entry : params.entrySet()) {
+                    String key = entry.getKey();
+                    Object value = entry.getValue();
+                    if (value instanceof File) {
+                        File file = (File) value;
+                        FileNameMap fileNameMap = URLConnection.getFileNameMap();
+                        String contentTypeFor = fileNameMap.getContentTypeFor(file.getName());
+                        if (contentTypeFor == null) {
+                            contentTypeFor = "application/octet-stream";
+                        }
+                        multipartBuilder.addFormDataPart(key, file.getName(), RequestBody.create(MediaType.parse(contentTypeFor), file));
+                        hasFile = true;
+                    } else {
+                        multipartBuilder.addFormDataPart(key, value.toString());
+                        formEncodingBuilder.add(key, value.toString());
+                    }
+                }
+                if (hasFile) {
+                    builder.post(multipartBuilder.build());
+                } else {
+                    builder.post(formEncodingBuilder.build());
+                }
+                break;
+            case Method.GET:
+                builder.get();
+                break;
+            default:
+                throw new IllegalArgumentException("method 指定参数值错误");
+        }
+
+        for (Map.Entry<String, String> entry : headers.entrySet()) {
+            builder.addHeader(entry.getKey(), entry.getValue());
+        }
+
+        if (tag != null) {
+            builder.tag(tag);
+        }
+
+        return client.newCall(builder.build()).execute();
+    }
+
+    public interface Method {
+        int GET = 0;
+        int POST = 1;
+    }
+}
